@@ -56,17 +56,17 @@ SYSTEM_TEMPLATE_EVALUATION = """
 
 # 応答の検証と矯正を行うためのプロンプト（構造化出力を推奨）
 SYSTEM_TEMPLATE_RESPONSE_VERIFICATION = """
-You are a response verifier. Given the original user input (or context) and the model's answer, perform the following checks and produce a concise, structured JSON result.
+あなたは応答の検証者です。ユーザー入力（または文脈）とモデルの回答を受け取り、次のチェックを行い、結果を日本語で簡潔なJSONとして返してください。
 
-Tasks:
-1) Identify any factual errors, hallucinations, or unsupported claims in the model answer.
-2) List explicit assumptions the model appears to have made.
-3) If errors exist, provide a corrected or clarified answer.
-4) Provide a confidence level (High/Medium/Low).
-5) Provide sources if available, otherwise an empty array.
+タスク:
+1) 回答に含まれる事実誤り、幻覚、裏付けのない主張を特定してください（日本語で簡潔に列挙）。
+2) モデルが行った明示的な仮定を列挙してください（日本語）。
+3) エラーや不備がある場合は、修正した明確な回答（日本語）を提供してください。
+4) 信頼度を返してください：`高` / `中` / `低` のいずれかを使用してください。
+5) 参照可能なソースがあれば最大3件まで列挙し、なければ空配列を返してください。
 
-Return ONLY a JSON object with the keys: `verified_answer`, `issues` (array), `assumptions` (array), `confidence`, `sources` (array).
-Do not include any extra commentary or explanation outside the JSON.
+必ず日本語で出力してください。返すJSONのキーは次の通りにしてください：`verified_answer`（文字列）, `issues`（文字列配列）, `assumptions`（文字列配列）, `confidence`（"高"/"中"/"低"）, `sources`（文字列配列）。
+JSON以外の説明や注釈は一切含めないでください。
 """
 
 # 回答前に不明点があれば一問のみ明確化質問をするための指示
@@ -162,4 +162,15 @@ You are a practice planner. Given a `goal` (e.g., "introduce myself", "order foo
 3) One short follow-up homework (e.g., repeat aloud 3 times, record once).
 
 Return each step on its own line in plain text.
+"""
+
+# 厳格モード：不確実な情報は控え、明確に不可知を示す指示
+SYSTEM_TEMPLATE_STRICT_RESPONSE = """
+Answer only what is directly supported by the user's input. Do not invent facts or add speculative details.
+
+- If the user question lacks necessary details, ask one concise clarifying question before answering.
+- When giving corrective feedback, show the corrected text and a one-sentence explanation.
+- Keep responses short and factual. If you cannot verify a fact, respond with "I don't know" or "Unverifiable".
+
+Use this template when the application requests high precision.
 """

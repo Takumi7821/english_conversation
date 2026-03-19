@@ -17,6 +17,7 @@ from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 import functions as ft
 import constants as ct
+import json
 
 
 # 各種設定
@@ -27,6 +28,98 @@ st.set_page_config(
 
 # タイトル表示
 st.markdown(f"## {ct.APP_NAME}")
+
+# サイドバーメニュー（ホーム/練習/履歴/設定/ヘルプ）と精度モード
+menu = st.sidebar.selectbox("メニュー", ["ホーム", "練習", "履歴", "設定", "ヘルプ"], index=0)
+precision_mode = st.sidebar.checkbox("精度優先モード", value=False, key="precision_mode")
+
+# メニュー切替で自動的に発話開始しないようにする（"練習"へ切替時は開始フラグをリセット）
+if "prev_menu" not in st.session_state:
+    st.session_state.prev_menu = None
+if menu == "練習" and st.session_state.prev_menu != "練習":
+    st.session_state.start_flg = False
+st.session_state.prev_menu = menu
+
+# ボタンの視認性を上げるための簡易スタイル（プライマリボタンを黒背景/白文字に）
+st.markdown(
+    """
+    <style>
+    /* Streamlit のボタン要素に対する簡易スタイル */
+    .stButton>button,
+    .stDownloadButton>button,
+    button,
+    input[type="button"] {
+        background-color: #000000 !important;
+        color: #ffffff !important;
+        border: none !important;
+        padding: 0.5rem 0.75rem !important;
+        border-radius: 6px !important;
+        transition: none !important;
+        -webkit-appearance: none !important;
+        appearance: none !important;
+        background-image: none !important;
+        opacity: 1 !important;
+    }
+    /* Hover / Focus / Active / Visited でも反転・影・フィルタを無効化 */
+    .stButton>button:hover,
+    .stDownloadButton>button:hover,
+    button:hover,
+    input[type="button"]:hover,
+    .stButton>button:focus,
+    .stDownloadButton>button:focus,
+    button:focus,
+    input[type="button"]:focus,
+    .stButton>button:active,
+    .stDownloadButton>button:active,
+    button:active,
+    input[type="button"]:active,
+    a:visited {
+        background-color: #000000 !important;
+        color: #ffffff !important;
+        box-shadow: none !important;
+        outline: none !important;
+        -webkit-filter: none !important;
+        filter: none !important;
+        background-image: none !important;
+        opacity: 1 !important;
+        transition: none !important;
+    }
+    /* インラインスタイルで与えられる場合の上書き保険 */
+    .stButton>button[style], button[style] {
+        background-color: #000000 !important;
+        color: #ffffff !important;
+        opacity: 1 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# メニューページ表示（練習以外はここで処理して終了）
+if menu != "練習":
+    if menu == "ホーム":
+        st.header("ようこそ")
+        st.write("音声で練習できる英会話アプリです。左のメニューで『練習』を選んで開始してください。")
+    elif menu == "履歴":
+        st.header("練習履歴")
+        for m in st.session_state.get("messages", []):
+            role = m.get("role")
+            content = m.get("content")
+            st.markdown(f"**{role}**: {content}")
+    elif menu == "設定":
+        st.header("設定")
+        # 精度優先モードはサイドバーのトグルで制御するため、ここでは状態表示のみ行う
+        current = st.session_state.get("precision_mode", False)
+        st.write(f"精度優先モード: {'ON' if current else 'OFF'}")
+        st.info("精度優先モードはサイドバーのチェックボックスで切り替えてください。")
+        if st.button("履歴をクリア"):
+            st.session_state.messages = []
+            st.success("履歴をクリアしました")
+    elif menu == "ヘルプ":
+        st.header("ヘルプ")
+        st.write("モードを選んで『開始』を押すと、それぞれの練習が始まります。日常英会話では活動タイプを選べます。")
+    st.stop()
+
 
 # 初期処理
 if "messages" not in st.session_state:
@@ -49,15 +142,22 @@ if "messages" not in st.session_state:
     st.session_state.problem = ""
     
     st.session_state.openai_obj = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    st.session_state.llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.5)
+    # 精度優先モードでは温度を下げる（実際のウィジェット状態を優先して参照）
+    temp = 0.2 if st.session_state.get("precision_mode", False) else 0.5
+    st.session_state.llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=temp)
     st.session_state.memory = ConversationSummaryBufferMemory(
         llm=st.session_state.llm,
         max_token_limit=1000,
         return_messages=True
     )
-
     # モード「日常英会話」用のChain作成
-    st.session_state.chain_basic_conversation = ft.create_chain(ct.SYSTEM_TEMPLATE_BASIC_CONVERSATION)
+    if st.session_state.get("precision_mode", False):
+        system_template = ct.SYSTEM_TEMPLATE_STRICT_RESPONSE + "\n\n" + ct.SYSTEM_TEMPLATE_BASIC_CONVERSATION
+    else:
+        system_template = ct.SYSTEM_TEMPLATE_BASIC_CONVERSATION
+    st.session_state.chain_basic_conversation = ft.create_chain(system_template)
+    # 応答検証チェーンも作成
+    st.session_state.chain_response_verifier = ft.create_chain(ct.SYSTEM_TEMPLATE_RESPONSE_VERIFICATION)
 
 # 初期表示
 # col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
@@ -93,7 +193,41 @@ with col3:
     st.session_state.pre_mode = st.session_state.mode
 with col4:
     st.session_state.englv = st.selectbox(label="英語レベル", options=ct.ENGLISH_LEVEL_OPTION, label_visibility="collapsed")
+# 練習タイプ（日本語）を常時表示して選べるようにする
+jp_options = ["自由会話", "ロールプレイ", "フレーズ練習", "スモールトーク", "発音アドバイス", "練習プラン"]
+en_to_jp = {
+    "Free Conversation": "自由会話",
+    "Roleplay": "ロールプレイ",
+    "Phrase Drill": "フレーズ練習",
+    "Small Talk": "スモールトーク",
+    "Pronunciation Tip": "発音アドバイス",
+    "Practice Goal": "練習プラン",
+}
+jp_to_en = {v: k for k, v in en_to_jp.items()}
+current_activity = st.session_state.get("activity", "自由会話")
+if current_activity in en_to_jp:
+    current_display = en_to_jp[current_activity]
+else:
+    current_display = current_activity
+try:
+    current_index = jp_options.index(current_display)
+except ValueError:
+    current_index = 0
+new_activity = st.selectbox("練習タイプ", jp_options, index=current_index)
+# 練習タイプを切り替えたら履歴をクリア
+if new_activity != current_display:
+    st.session_state.messages = []
+st.session_state.activity = new_activity
 
+# シャドーイング／ディクテーションの簡易タイプ選択
+if "shadowing_activity" not in st.session_state:
+    st.session_state.shadowing_activity = "通常"
+if "dictation_activity" not in st.session_state:
+    st.session_state.dictation_activity = "通常"
+if st.session_state.mode == ct.MODE_2:
+    st.session_state.shadowing_activity = st.selectbox("シャドーイングタイプ", ["通常", "長めの文", "速度変更"], index=["通常", "長めの文", "速度変更"].index(st.session_state.shadowing_activity))
+if st.session_state.mode == ct.MODE_3:
+    st.session_state.dictation_activity = st.selectbox("ディクテーションタイプ", ["通常", "スローモード", "分割再生"], index=["通常", "スローモード", "分割再生"].index(st.session_state.dictation_activity))
 with st.chat_message("assistant", avatar="images/ai_icon.jpg"):
     st.markdown("こちらは生成AIによる音声英会話の練習アプリです。何度も繰り返し練習し、英語力をアップさせましょう。")
     st.markdown("**【操作説明】**")
@@ -118,9 +252,9 @@ for message in st.session_state.messages:
 
 # LLMレスポンスの下部にモード実行のボタン表示
 if st.session_state.shadowing_flg:
-    st.session_state.shadowing_button_flg = st.button("シャドーイング開始")
+    st.session_state.shadowing_button_flg = st.button("シャドーイング開始", type="primary")
 if st.session_state.dictation_flg:
-    st.session_state.dictation_button_flg = st.button("ディクテーション開始")
+    st.session_state.dictation_button_flg = st.button("ディクテーション開始", type="primary")
 
 # 「ディクテーション」モードのチャット入力受付時に実行
 if st.session_state.chat_open_flg:
@@ -190,11 +324,10 @@ if st.session_state.start_flg:
     
     # モード：「日常英会話」
     if st.session_state.mode == ct.MODE_1:
-        # 日常会話用アクティビティ選択
-        activity = st.selectbox("練習タイプ", ["Free Conversation", "Roleplay", "Phrase Drill", "Small Talk", "Pronunciation Tip", "Practice Goal"], index=0)
+        activity_en = jp_to_en.get(st.session_state.activity, "Free Conversation")
 
-        if activity == "Free Conversation":
-            # 既存の音声入力→応答フロー
+        if activity_en == "Free Conversation":
+            # 音声入力フロー（従来の会話）
             audio_input_file_path = f"{ct.AUDIO_INPUT_DIR}/audio_input_{int(time.time())}.wav"
             ft.record_audio(audio_input_file_path)
 
@@ -206,15 +339,72 @@ if st.session_state.start_flg:
                 st.markdown(audio_input_text)
 
             with st.spinner("回答の音声読み上げ準備中..."):
+                # ユーザー入力値をLLMに渡して回答取得
                 llm_response = st.session_state.chain_basic_conversation.predict(input=audio_input_text)
+
+                # 応答検証を行い、低信頼なら精度優先で再生成
                 try:
                     verifier_input = f"USER_INPUT:\n{audio_input_text}\nMODEL_ANSWER:\n{llm_response}"
                     verification_result = st.session_state.chain_response_verifier.predict(input=verifier_input)
-                except Exception as e:
-                    verification_result = f"{{\"error\": \"verification_failed\", \"message\": \"{str(e)}\"}}"
-                with st.expander("Response verification (debug)"):
-                    st.text(verification_result)
+                    parsed = json.loads(verification_result)
+                    confidence = parsed.get("confidence", "High")
+                except Exception:
+                    parsed = None
+                    confidence = "High"
 
+                if confidence != "High":
+                    # 再生成（厳格モードを適用）
+                    strict_template = ct.SYSTEM_TEMPLATE_STRICT_RESPONSE + "\n\n" + ct.SYSTEM_TEMPLATE_BASIC_CONVERSATION
+                    strict_chain = ft.create_chain(strict_template)
+                    try:
+                        new_response = strict_chain.predict(input=audio_input_text)
+                        llm_response = new_response
+                        st.info("応答を精度優先で再生成しました")
+                    except Exception:
+                        pass
+
+                with st.expander("自動フィードバック（検証結果）"):
+                    if 'verification_result' in locals():
+                        try:
+                            vr = json.loads(verification_result)
+                        except Exception:
+                            st.text("検証結果の解析に失敗しました。生データ:")
+                            st.text(verification_result)
+                        else:
+                            # 表示: 信頼度・問題点・前提・修正済み回答・ソース
+                            confidence = vr.get("confidence", "Unknown")
+                            issues = vr.get("issues", []) or []
+                            assumptions = vr.get("assumptions", []) or []
+                            verified_answer = vr.get("verified_answer", "")
+                            sources = vr.get("sources", []) or []
+
+                            st.markdown(f"**信頼度:** {confidence}")
+                            if issues:
+                                st.markdown("**検出された問題:**")
+                                for it in issues:
+                                    st.markdown(f"- {it}")
+                            else:
+                                st.markdown("**検出された問題:** なし")
+
+                            if assumptions:
+                                st.markdown("**モデルの仮定:**")
+                                for a in assumptions:
+                                    st.markdown(f"- {a}")
+
+                            if sources:
+                                st.markdown("**参照ソース:**")
+                                for s in sources:
+                                    st.markdown(f"- {s}")
+                            else:
+                                st.markdown("**参照ソース:** なし")
+
+                            if verified_answer:
+                                st.markdown("**修正済み回答:**")
+                                st.write(verified_answer)
+                    else:
+                        st.text("検証結果は利用できません")
+
+                # 音声合成
                 llm_response_audio = st.session_state.openai_obj.audio.speech.create(
                     model="tts-1",
                     voice="alloy",
@@ -232,28 +422,28 @@ if st.session_state.start_flg:
             st.session_state.messages.append({"role": "assistant", "content": llm_response})
 
         else:
-            # テキスト入力ベースのアクティビティ
-            if activity == "Roleplay":
-                level = st.selectbox("Level", ["Beginner", "Intermediate", "Advanced"], index=0)
+            # テキストベースの活動（ロールプレイ等）
+            if activity_en == "Roleplay":
+                level = st.selectbox("レベル", ["Beginner", "Intermediate", "Advanced"], index=0)
                 scenario = st.text_input("Scenario (短く):", value="Order food at a cafe")
                 input_str = f"LEVEL: {level}\nSCENARIO: {scenario}"
                 template = ct.SYSTEM_TEMPLATE_ROLEPLAY
-            elif activity == "Phrase Drill":
-                level = st.selectbox("Level", ["Beginner", "Intermediate", "Advanced"], index=0, key="phrase_level")
+            elif activity_en == "Phrase Drill":
+                level = st.selectbox("レベル", ["Beginner", "Intermediate", "Advanced"], index=0, key="phrase_level")
                 target_phrase = st.text_input("Target phrase:", value="Can I get the check, please?")
                 input_str = f"target_phrase: {target_phrase}\nlevel: {level}"
                 template = ct.SYSTEM_TEMPLATE_TARGET_PHRASE_DRILL
-            elif activity == "Small Talk":
-                level = st.selectbox("Level", ["Beginner", "Intermediate", "Advanced"], index=0, key="smalltalk_level")
+            elif activity_en == "Small Talk":
+                level = st.selectbox("レベル", ["Beginner", "Intermediate", "Advanced"], index=0, key="smalltalk_level")
                 topic = st.text_input("Topic:", value="weekend plans")
                 input_str = f"topic: {topic}\nlevel: {level}"
                 template = ct.SYSTEM_TEMPLATE_SOCIAL_SMALLTALK
-            elif activity == "Pronunciation Tip":
-                level = st.selectbox("Level", ["Beginner", "Intermediate", "Advanced"], index=0, key="pron_level")
+            elif activity_en == "Pronunciation Tip":
+                level = st.selectbox("レベル", ["Beginner", "Intermediate", "Advanced"], index=0, key="pron_level")
                 word = st.text_input("Word or short phrase:", value="thought")
                 input_str = f"{word}\nlevel: {level}"
                 template = ct.SYSTEM_TEMPLATE_PRONUNCIATION_TIPS
-            elif activity == "Practice Goal":
+            elif activity_en == "Practice Goal":
                 goal = st.text_input("Practice goal:", value="introduce myself")
                 input_str = f"goal: {goal}"
                 template = ct.SYSTEM_TEMPLATE_PRACTICE_GOAL
@@ -262,6 +452,8 @@ if st.session_state.start_flg:
                 template = ct.SYSTEM_TEMPLATE_BASIC_CONVERSATION
 
             if st.button("実行", key="activity_run"):
+                # 実行ボタンが押されたら履歴をクリアして新しい活動を開始
+                st.session_state.messages = []
                 with st.spinner('応答生成中...'):
                     chain = ft.create_chain(template)
                     try:
@@ -269,7 +461,6 @@ if st.session_state.start_flg:
                     except Exception as e:
                         response_text = f"Error: {e}"
 
-                # 表示と音声再生（可能なら）
                 with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
                     st.markdown(response_text)
                 st.session_state.messages.append({"role": "assistant", "content": response_text})
