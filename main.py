@@ -190,44 +190,101 @@ if st.session_state.start_flg:
     
     # モード：「日常英会話」
     if st.session_state.mode == ct.MODE_1:
-        # 音声入力を受け取って音声ファイルを作成
-        audio_input_file_path = f"{ct.AUDIO_INPUT_DIR}/audio_input_{int(time.time())}.wav"
-        ft.record_audio(audio_input_file_path)
+        # 日常会話用アクティビティ選択
+        activity = st.selectbox("練習タイプ", ["Free Conversation", "Roleplay", "Phrase Drill", "Small Talk", "Pronunciation Tip", "Practice Goal"], index=0)
 
-        # 音声入力ファイルから文字起こしテキストを取得
-        with st.spinner('音声入力をテキストに変換中...'):
-            transcript = ft.transcribe_audio(audio_input_file_path)
-            audio_input_text = transcript.text
+        if activity == "Free Conversation":
+            # 既存の音声入力→応答フロー
+            audio_input_file_path = f"{ct.AUDIO_INPUT_DIR}/audio_input_{int(time.time())}.wav"
+            ft.record_audio(audio_input_file_path)
 
-        # 音声入力テキストの画面表示
-        with st.chat_message("user", avatar=ct.USER_ICON_PATH):
-            st.markdown(audio_input_text)
+            with st.spinner('音声入力をテキストに変換中...'):
+                transcript = ft.transcribe_audio(audio_input_file_path)
+                audio_input_text = transcript.text
 
-        with st.spinner("回答の音声読み上げ準備中..."):
-            # ユーザー入力値をLLMに渡して回答取得
-            llm_response = st.session_state.chain_basic_conversation.predict(input=audio_input_text)
-            
-            # LLMからの回答を音声データに変換
-            llm_response_audio = st.session_state.openai_obj.audio.speech.create(
-                model="tts-1",
-                voice="alloy",
-                input=llm_response
-            )
+            with st.chat_message("user", avatar=ct.USER_ICON_PATH):
+                st.markdown(audio_input_text)
 
-            # 一旦mp3形式で音声ファイル作成後、wav形式に変換
-            audio_output_file_path = f"{ct.AUDIO_OUTPUT_DIR}/audio_output_{int(time.time())}.wav"
-            ft.save_to_wav(llm_response_audio.content, audio_output_file_path)
+            with st.spinner("回答の音声読み上げ準備中..."):
+                llm_response = st.session_state.chain_basic_conversation.predict(input=audio_input_text)
+                try:
+                    verifier_input = f"USER_INPUT:\n{audio_input_text}\nMODEL_ANSWER:\n{llm_response}"
+                    verification_result = st.session_state.chain_response_verifier.predict(input=verifier_input)
+                except Exception as e:
+                    verification_result = f"{{\"error\": \"verification_failed\", \"message\": \"{str(e)}\"}}"
+                with st.expander("Response verification (debug)"):
+                    st.text(verification_result)
 
-        # 音声ファイルの読み上げ
-        ft.play_wav(audio_output_file_path, speed=st.session_state.speed)
+                llm_response_audio = st.session_state.openai_obj.audio.speech.create(
+                    model="tts-1",
+                    voice="alloy",
+                    input=llm_response
+                )
+                audio_output_file_path = f"{ct.AUDIO_OUTPUT_DIR}/audio_output_{int(time.time())}.wav"
+                ft.save_to_wav(llm_response_audio.content, audio_output_file_path)
 
-        # AIメッセージの画面表示とリストへの追加
-        with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
-            st.markdown(llm_response)
+            ft.play_wav(audio_output_file_path, speed=st.session_state.speed)
 
-        # ユーザー入力値とLLMからの回答をメッセージ一覧に追加
-        st.session_state.messages.append({"role": "user", "content": audio_input_text})
-        st.session_state.messages.append({"role": "assistant", "content": llm_response})
+            with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
+                st.markdown(llm_response)
+
+            st.session_state.messages.append({"role": "user", "content": audio_input_text})
+            st.session_state.messages.append({"role": "assistant", "content": llm_response})
+
+        else:
+            # テキスト入力ベースのアクティビティ
+            if activity == "Roleplay":
+                level = st.selectbox("Level", ["Beginner", "Intermediate", "Advanced"], index=0)
+                scenario = st.text_input("Scenario (短く):", value="Order food at a cafe")
+                input_str = f"LEVEL: {level}\nSCENARIO: {scenario}"
+                template = ct.SYSTEM_TEMPLATE_ROLEPLAY
+            elif activity == "Phrase Drill":
+                level = st.selectbox("Level", ["Beginner", "Intermediate", "Advanced"], index=0, key="phrase_level")
+                target_phrase = st.text_input("Target phrase:", value="Can I get the check, please?")
+                input_str = f"target_phrase: {target_phrase}\nlevel: {level}"
+                template = ct.SYSTEM_TEMPLATE_TARGET_PHRASE_DRILL
+            elif activity == "Small Talk":
+                level = st.selectbox("Level", ["Beginner", "Intermediate", "Advanced"], index=0, key="smalltalk_level")
+                topic = st.text_input("Topic:", value="weekend plans")
+                input_str = f"topic: {topic}\nlevel: {level}"
+                template = ct.SYSTEM_TEMPLATE_SOCIAL_SMALLTALK
+            elif activity == "Pronunciation Tip":
+                level = st.selectbox("Level", ["Beginner", "Intermediate", "Advanced"], index=0, key="pron_level")
+                word = st.text_input("Word or short phrase:", value="thought")
+                input_str = f"{word}\nlevel: {level}"
+                template = ct.SYSTEM_TEMPLATE_PRONUNCIATION_TIPS
+            elif activity == "Practice Goal":
+                goal = st.text_input("Practice goal:", value="introduce myself")
+                input_str = f"goal: {goal}"
+                template = ct.SYSTEM_TEMPLATE_PRACTICE_GOAL
+            else:
+                input_str = ""
+                template = ct.SYSTEM_TEMPLATE_BASIC_CONVERSATION
+
+            if st.button("実行", key="activity_run"):
+                with st.spinner('応答生成中...'):
+                    chain = ft.create_chain(template)
+                    try:
+                        response_text = chain.predict(input=input_str)
+                    except Exception as e:
+                        response_text = f"Error: {e}"
+
+                # 表示と音声再生（可能なら）
+                with st.chat_message("assistant", avatar=ct.AI_ICON_PATH):
+                    st.markdown(response_text)
+                st.session_state.messages.append({"role": "assistant", "content": response_text})
+
+                try:
+                    llm_response_audio = st.session_state.openai_obj.audio.speech.create(
+                        model="tts-1",
+                        voice="alloy",
+                        input=response_text
+                    )
+                    audio_output_file_path = f"{ct.AUDIO_OUTPUT_DIR}/audio_output_{int(time.time())}.wav"
+                    ft.save_to_wav(llm_response_audio.content, audio_output_file_path)
+                    ft.play_wav(audio_output_file_path, speed=st.session_state.speed)
+                except Exception:
+                    pass
 
 
     # モード：「シャドーイング」
